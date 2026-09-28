@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Inspect explicitly supplied persistent-undo directories; optionally archive safely."""
+import argparse
+import os
+from pathlib import Path
+import shutil
+import stat
+import sys
+
+
+def inventory(root):
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("input must be an existing non-symlink directory")
+    files = []
+    for base, dirs, names in os.walk(root, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if not (Path(base) / d).is_symlink())
+        for name in sorted(names):
+            p = Path(base) / name
+            mode = p.lstat().st_mode
+            if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+                continue
+            files.append((p, p.relative_to(root), p.stat().st_size))
+    return files
+
+
+def archive(files, target):
+    if target.exists() or target.is_symlink():
+        raise ValueError("archive destination already exists")
+    target.mkdir(mode=0o700, parents=False)
+    copied = 0
+    try:
+        for src, relative, _ in files:
+            dest = target / relative
+            dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            with os.fdopen(os.open(src, flags), "rb") as inp:
+                if not stat.S_ISREG(os.fstat(inp.fileno()).st_mode):
+                    raise ValueError("source changed during archive")
+                with dest.open("xb") as out:
+                    shutil.copyfileobj(inp, out)
+            copied += 1
+    except Exception:
+        raise RuntimeError("archive incomplete; inspect destination manually before retrying") from None
+    return copied
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Read-only persistent undo inventory; optional explicit archive")
+    parser.add_argument("--vim-dir", type=Path, required=True, help="Vim undodir (provide explicitly)")
+    parser.add_argument("--nvim-dir", type=Path, required=True, help="Neovim undodir (provide explicitly)")
+    parser.add_argument("--archive-to", type=Path, help="NEW private archive directory; copies only regular files from both inputs")
+    args = parser.parse_args(argv)
+    try:
+        roots = [p.expanduser().resolve(strict=True) for p in (args.vim_dir, args.nvim_dir)]
+        # Reject symlink roots before resolution (which would conceal the link).
+        if args.vim_dir.expanduser().is_symlink() or args.nvim_dir.expanduser().is_symlink():
+            raise ValueError("symlink input root is not allowed")
+        same = roots[0] == roots[1]
+        inv = [inventory(p) for p in roots]
+        for label, items in zip(("Vim", "Neovim"), inv):
+            print(f"{label}: {len(items)} regular files, {sum(x[2] for x in items)} bytes")
+        print("Shared directory:", "YES — preserve a separate archive before editor migration" if same else "no")
+        print("Source files are never modified or deleted; no editor is launched.")
+        if args.archive_to:
+            target = args.archive_to.expanduser().absolute()
+            if target.is_symlink() or any(target == p or p in target.parents or target in p.parents for p in roots):
+                raise ValueError("archive must be outside both source trees")
+            if not target.parent.is_dir() or target.parent.is_symlink():
+                raise ValueError("archive parent must already exist and not be a symlink")
+            if target.exists() or target.is_symlink():
+                raise ValueError("archive destination already exists")
+            target.mkdir(mode=0o700)
+            for label, items in zip(("vim", "nvim"), inv):
+                print(f"Archived {archive(items, target / label)} {label} files")
+        else:
+            print("Archive: not requested (read-only mode)")
+        return 0
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

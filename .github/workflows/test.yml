@@ -1,0 +1,17 @@
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and tests
+        run: |
+          python3 -m py_compile undovault
+          python3 -m unittest discover -s tests -v
+          python3 undovault --help
