@@ -62,8 +62,11 @@ def main(argv=None):
         print("Shared directory:", "YES — preserve a separate archive before editor migration" if same else "no")
         print("Source files are never modified or deleted; no editor is launched.")
         if args.archive_to:
-            target = args.archive_to.expanduser().absolute()
-            if target.is_symlink() or any(target == p or p in target.parents or target in p.parents for p in roots):
+            raw_target = args.archive_to.expanduser().absolute()
+            if raw_target.is_symlink():
+                raise ValueError("archive destination must not be a symlink")
+            target = raw_target.resolve(strict=False)
+            if any(target == p or p in target.parents or target in p.parents for p in roots):
                 raise ValueError("archive must be outside both source trees")
             if not target.parent.is_dir() or target.parent.is_symlink():
                 raise ValueError("archive parent must already exist and not be a symlink")
